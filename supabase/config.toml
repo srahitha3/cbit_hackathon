@@ -1,0 +1,7 @@
+project_id = "ublhrosavnleajinvcwc"
+
+[functions.admin-create-user]
+verify_jwt = false
+
+[functions.seed-demo-data]
+verify_jwt = false
