@@ -35,8 +35,11 @@ export default function Login() {
     }
     setSubmitting(true);
     const { error: err } = await signIn(parsed.data.email, parsed.data.password);
-    if (err) setError(err);
-    setSubmitting(false);
+    if (err) {
+      setError(err);
+      setSubmitting(false);
+    }
+    // Don't set submitting to false on success - let the navigation happen
   };
 
   return (

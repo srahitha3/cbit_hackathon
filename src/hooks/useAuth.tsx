@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState, useCallback, useRef, ty
 import { supabase } from "@/integrations/supabase/client";
 import type { User } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
-
+import { testDatabaseAccess } from "./test-database";
 type AppRole = Database["public"]["Enums"]["app_role"];
 
 interface AuthContextType {
@@ -13,28 +13,64 @@ interface AuthContextType {
   signIn: (email: string, password: string) => Promise<{ error: string | null }>;
   signOut: () => Promise<void>;
 }
-
+testDatabaseAccess();
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const IDLE_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+const FETCH_TIMEOUT_MS = 10000; // 10 second timeout for database queries
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [role, setRole] = useState<AppRole | null>(null);
   const [profile, setProfile] = useState<AuthContextType["profile"]>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const idleTimer = useRef<ReturnType<typeof setTimeout>>();
 
   const fetchUserData = useCallback(async (userId: string) => {
-    const [roleRes, profileRes] = await Promise.all([
-      supabase.from("user_roles").select("role").eq("user_id", userId).maybeSingle(),
-      supabase.from("profiles").select("full_name, department, enrollment_number").eq("user_id", userId).maybeSingle(),
-    ]);
-    setRole(roleRes.data?.role ?? null);
-    setProfile(profileRes.data ?? null);
+    console.log("🔍 fetchUserData called for userId:", userId);
+    
+    try {
+      // Add timeout protection
+      const fetchPromise = Promise.all([
+        supabase.from("user_roles").select("role").eq("user_id", userId).maybeSingle(),
+        supabase.from("profiles").select("full_name, department, enrollment_number").eq("user_id", userId).maybeSingle(),
+      ]);
+      
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("Database query timeout")), FETCH_TIMEOUT_MS)
+      );
+      
+      const [roleRes, profileRes] = await Promise.race([fetchPromise, timeoutPromise]) as any;
+      
+      console.log("📊 Role response:", roleRes);
+      console.log("📊 Profile response:", profileRes);
+      
+      if (roleRes.error) {
+        console.error("❌ Error fetching role:", roleRes.error);
+        throw new Error(`Role fetch error: ${roleRes.error.message}`);
+      }
+      if (profileRes.error) {
+        console.error("❌ Error fetching profile:", profileRes.error);
+        throw new Error(`Profile fetch error: ${profileRes.error.message}`);
+      }
+      
+      setRole(roleRes.data?.role ?? null);
+      setProfile(profileRes.data ?? null);
+      
+      console.log("✅ User data set - Role:", roleRes.data?.role, "Profile:", profileRes.data);
+    } catch (error) {
+      console.error("❌ Exception in fetchUserData:", error);
+      // Set default values on error so user can still proceed
+      setRole(null);
+      setProfile(null);
+      
+      // Optionally sign out on critical errors
+      // await signOut();
+    }
   }, []);
 
   const signOut = useCallback(async () => {
+    console.log("👋 signOut called");
     await supabase.auth.signOut();
     setUser(null);
     setRole(null);
@@ -58,11 +94,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user, signOut]);
 
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    console.log("🔧 Setting up auth listener");
+    
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log("🔔 Auth state changed:", event, "Session exists:", !!session);
+      
       if (session?.user) {
+        console.log("✅ User found in session:", session.user.id);
         setUser(session.user);
         await fetchUserData(session.user.id);
       } else {
+        console.log("❌ No user in session");
         setUser(null);
         setRole(null);
         setProfile(null);
@@ -70,22 +112,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
     });
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(({ data: { session }, error }) => {
+      console.log("🔍 Initial getSession - Session exists:", !!session, "Error:", error);
+      
+      if (error) {
+        console.error("❌ getSession error:", error);
+      }
+      
       if (session?.user) {
+        console.log("✅ Initial session user:", session.user.id);
         setUser(session.user);
         fetchUserData(session.user.id);
       }
       setLoading(false);
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      console.log("🧹 Cleaning up auth listener");
+      subscription.unsubscribe();
+    };
   }, [fetchUserData]);
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) return { error: "Invalid credentials. Please try again." };
-    return { error: null };
+    console.log("🔐 signIn called with email:", email);
+    
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      
+      console.log("📬 signInWithPassword response - Data:", data, "Error:", error);
+      
+      if (error) {
+        console.error("❌ Sign in error:", error);
+        return { error: "Invalid credentials. Please try again." };
+      }
+      
+      console.log("✅ Sign in successful");
+      return { error: null };
+    } catch (exception) {
+      console.error("❌ Exception during sign in:", exception);
+      return { error: "An unexpected error occurred. Please try again." };
+    }
   };
+
+  console.log("🎨 AuthProvider render - User:", !!user, "Role:", role, "Loading:", loading);
 
   return (
     <AuthContext.Provider value={{ user, role, profile, loading, signIn, signOut }}>
